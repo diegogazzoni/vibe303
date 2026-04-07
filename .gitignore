@@ -1,0 +1,32 @@
+# Build output
+build/
+
+# JUCE is fetched separately (see README for clone instructions)
+JUCE/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# CMake generated
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Compiled objects
+*.o
+*.a
+*.d
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

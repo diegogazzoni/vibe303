@@ -6,6 +6,8 @@
 #include "AcidFilter.h"
 #include "AcidEnvelope.h"
 #include "AccentSlide.h"
+#include "LFO.h"
+#include "PresetManager.h"
 
 //==============================================================================
 class Acid303AudioProcessor : public juce::AudioProcessor
@@ -46,10 +48,21 @@ public:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     juce::AudioProcessorValueTreeState apvts;
 
+    // Preset manager (created after apvts)
+    PresetManager presetManager;
+
     // Tempo-sync note division labels (index matches delayDiv parameter)
     static const juce::StringArray kDivisionLabels;
     // Corresponding beat multipliers (fraction of a whole note)
     static const float             kDivisionBeats[]; // in beats (quarter notes)
+
+    // LFO shape names (index matches lfoShape parameter)
+    static const juce::StringArray kLfoShapeLabels;
+    // LFO target names (index matches lfoTarget parameter)
+    static const juce::StringArray kLfoTargetLabels;
+
+    // Last computed LFO value (read by the editor for display)
+    std::atomic<float> lfoOutputValue { 0.0f };
 
 private:
     //==========================================================================
@@ -59,6 +72,7 @@ private:
     AcidEnvelope ampEnv;
     AcidEnvelope filterEnv;
     AccentSlide  accentSlide;
+    LFO          lfo;
 
     // Stereo delay ring buffers
     static constexpr size_t kMaxDelaySamples = 192002; // ~2 s at 96 kHz
@@ -67,7 +81,7 @@ private:
     int                     delayWritePos   = 0;
     double                  currentSampleRate = 44100.0;
 
-    // Cached parameter pointers
+    // Cached parameter pointers — synth
     std::atomic<float>* pTuning        = nullptr;
     std::atomic<float>* pCutoff        = nullptr;
     std::atomic<float>* pResonance     = nullptr;
@@ -76,9 +90,15 @@ private:
     std::atomic<float>* pAccent        = nullptr;
     std::atomic<float>* pVolume        = nullptr;
     std::atomic<float>* pWaveform      = nullptr;
-    std::atomic<float>* pDelayDiv      = nullptr;  // note division index
+    // Delay
+    std::atomic<float>* pDelayDiv      = nullptr;
     std::atomic<float>* pDelayFeedback = nullptr;
     std::atomic<float>* pDelayMix      = nullptr;
+    // LFO
+    std::atomic<float>* pLfoRate       = nullptr;
+    std::atomic<float>* pLfoDepth      = nullptr;
+    std::atomic<float>* pLfoShape      = nullptr;
+    std::atomic<float>* pLfoTarget     = nullptr;
 
     int   currentNote = -1;
     bool  noteIsOn    = false;

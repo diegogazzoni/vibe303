@@ -22,11 +22,24 @@ const float Acid303AudioProcessor::kDivisionBeats[]
     4.0f             // 1/1
 };
 
+// LFO shape names (index matches lfoShape Choice parameter)
+const juce::StringArray Acid303AudioProcessor::kLfoShapeLabels
+{
+    "Sine", "Triangle", "Sawtooth", "Square", "S&H"
+};
+
+// LFO target names (index matches lfoTarget Choice parameter)
+const juce::StringArray Acid303AudioProcessor::kLfoTargetLabels
+{
+    "None", "Cutoff", "Resonance", "Env Mod", "Volume", "Pitch"
+};
+
 //==============================================================================
 Acid303AudioProcessor::Acid303AudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "Parameters", createParameterLayout())
+      apvts (*this, nullptr, "Parameters", createParameterLayout()),
+      presetManager (apvts)
 {
     pTuning        = apvts.getRawParameterValue ("tuning");
     pCutoff        = apvts.getRawParameterValue ("cutoff");
@@ -39,6 +52,10 @@ Acid303AudioProcessor::Acid303AudioProcessor()
     pDelayDiv      = apvts.getRawParameterValue ("delayDiv");
     pDelayFeedback = apvts.getRawParameterValue ("delayFeedback");
     pDelayMix      = apvts.getRawParameterValue ("delayMix");
+    pLfoRate       = apvts.getRawParameterValue ("lfoRate");
+    pLfoDepth      = apvts.getRawParameterValue ("lfoDepth");
+    pLfoShape      = apvts.getRawParameterValue ("lfoShape");
+    pLfoTarget     = apvts.getRawParameterValue ("lfoTarget");
 }
 
 Acid303AudioProcessor::~Acid303AudioProcessor() {}
@@ -96,6 +113,27 @@ Acid303AudioProcessor::createParameterLayout()
         "delayMix", "Delay Mix",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.35f));
 
+    // ---- LFO parameters -------------------------------------------------
+    // Rate: 0.05 – 20 Hz
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        "lfoRate", "LFO Rate",
+        juce::NormalisableRange<float> (0.05f, 20.0f, 0.01f, 0.4f), 1.0f));
+
+    // Depth: 0 – 1
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        "lfoDepth", "LFO Depth",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+
+    // Shape: Sine / Triangle / Sawtooth / Square / S&H
+    params.push_back (std::make_unique<juce::AudioParameterChoice> (
+        "lfoShape", "LFO Shape",
+        kLfoShapeLabels, 0));
+
+    // Target: None / Cutoff / Resonance / Env Mod / Volume / Pitch
+    params.push_back (std::make_unique<juce::AudioParameterChoice> (
+        "lfoTarget", "LFO Target",
+        kLfoTargetLabels, 0));
+
     return { params.begin(), params.end() };
 }
 
@@ -109,6 +147,7 @@ void Acid303AudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBl
     ampEnv.prepare (sampleRate);
     filterEnv.prepare (sampleRate);
     accentSlide.prepare (sampleRate);
+    lfo.prepare (sampleRate);
 
     ampEnv.setAttack (0.0001f);
     filterEnv.setAttack (0.002f);
@@ -125,6 +164,7 @@ void Acid303AudioProcessor::releaseResources()
     osc.reset();
     filter.reset();
     accentSlide.reset();
+    lfo.reset();
 }
 
 //==============================================================================
@@ -137,17 +177,23 @@ void Acid303AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     buffer.clear();
 
     // ---- Read parameters ------------------------------------------------
-    const float tuning        = pTuning->load();
-    const float cutoff        = pCutoff->load();
-    const float resonance     = pResonance->load();
-    const float envMod        = pEnvMod->load();
+    float tuning        = pTuning->load();
+    float cutoff        = pCutoff->load();
+    float resonance     = pResonance->load();
+    float envMod        = pEnvMod->load();
     const float decay         = pDecay->load();
     const float accent        = pAccent->load();
-    const float volume        = pVolume->load();
+    float volume        = pVolume->load();
     const int   wfChoice      = (int) pWaveform->load();
     const int   divIndex      = juce::jlimit (0, 7, (int) pDelayDiv->load());
     const float delayFeedback = juce::jlimit (0.0f, 0.93f, pDelayFeedback->load());
     const float delayMix      = juce::jlimit (0.0f, 1.0f,  pDelayMix->load());
+
+    // LFO params
+    const float     lfoRate   = pLfoRate->load();
+    const float     lfoDepth  = pLfoDepth->load();
+    const int       lfoShape  = juce::jlimit (0, 4, (int) pLfoShape->load());
+    const int       lfoTarget = juce::jlimit (0, 5, (int) pLfoTarget->load());
 
     ampEnv.setDecay (decay);
     filterEnv.setDecay (decay);
@@ -180,6 +226,12 @@ void Acid303AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     auto midiIterator = midiMessages.begin();
     int  nextMidiPos  = (midiIterator != midiMessages.end())
                             ? (*midiIterator).samplePosition : numSamples;
+
+    // LFO shape enum
+    const LFO::Shape lfoShapeEnum = static_cast<LFO::Shape> (lfoShape);
+
+    // Last LFO value for editor display
+    float lastLfoVal = 0.0f;
 
     // ---- Sample loop ----------------------------------------------------
     for (int i = 0; i < numSamples; ++i)
@@ -227,38 +279,79 @@ void Acid303AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                               ? (*midiIterator).samplePosition : numSamples;
         }
 
+        // --- LFO tick ----------------------------------------------------
+        const float lfoRaw = lfo.process (lfoRate, lfoShapeEnum); // [-1, +1]
+        lastLfoVal = lfoRaw;
+
+        // Apply modulation to the base parameter values
+        float modCutoff    = cutoff;
+        float modResonance = resonance;
+        float modEnvMod    = envMod;
+        float modVolume    = volume;
+        float modTuning    = tuning;
+
+        if (lfoTarget > 0 && lfoDepth > 0.0f)
+        {
+            const float mod = lfoRaw * lfoDepth;
+
+            switch (lfoTarget)
+            {
+                case 1: // Cutoff — modulate ±5 octaves on log scale
+                {
+                    // Map mod [-1,+1] → multiply cutoff by 2^(mod * 3)  (±3 octaves)
+                    float factor = std::pow (2.0f, mod * 3.0f);
+                    modCutoff = juce::jlimit (20.0f, 15000.0f, cutoff * factor);
+                    break;
+                }
+                case 2: // Resonance ±1 (clamped 0–1)
+                    modResonance = juce::jlimit (0.0f, 1.0f, resonance + mod);
+                    break;
+
+                case 3: // Env Mod ±1 (clamped 0–1)
+                    modEnvMod = juce::jlimit (0.0f, 1.0f, envMod + mod);
+                    break;
+
+                case 4: // Volume ±0.5 (clamped 0–1)
+                    modVolume = juce::jlimit (0.0f, 1.0f, volume + mod * 0.5f);
+                    break;
+
+                case 5: // Pitch ±2 semitones
+                    modTuning = tuning + mod * 2.0f;
+                    break;
+
+                default: break;
+            }
+        }
+
         // --- Synth chain -------------------------------------------------
-        float sample      = osc.process (tuning);
+        float sample      = osc.process (modTuning);
         float ampLevel    = ampEnv.process();
         float filterLevel = filterEnv.process();
         float accentGain  = accentSlide.processAccentGain (accent);
         float extraEnvMod = accentSlide.accentEnvModBoost (accent);
 
         sample *= ampLevel * accentGain;
-        sample  = filter.processSample (sample, cutoff, resonance,
-                                        envMod + extraEnvMod, filterLevel);
-        sample *= volume;
+        sample  = filter.processSample (sample, modCutoff, modResonance,
+                                        modEnvMod + extraEnvMod, filterLevel);
+        sample *= modVolume;
 
         // --- Stereo ping-pong delay ---------------------------------------
-        //
-        // Read the two taps from the circular buffer
         const int readPos = (delayWritePos - delaySamples + delayBufSize) % delayBufSize;
         const float tapL  = delayBufferL[(size_t) readPos];
         const float tapR  = delayBufferR[(size_t) readPos];
 
-        // Write: ping-pong — current dry feeds the OPPOSITE channel's buffer,
-        // so the wet signal bounces L→R→L→R each repeat.
-        // Crucially we do NOT add the dry signal here; it enters the mix below.
         delayBufferL[(size_t) delayWritePos] = sample + tapR * delayFeedback;
         delayBufferR[(size_t) delayWritePos] = sample + tapL * delayFeedback;
 
         delayWritePos = (delayWritePos + 1) % delayBufSize;
 
-        // Dry/wet mix
         outL[i] = sample * (1.0f - delayMix) + tapL * delayMix;
         if (outR != nullptr)
             outR[i] = sample * (1.0f - delayMix) + tapR * delayMix;
     }
+
+    // Publish last LFO value for editor display (atomic write)
+    lfoOutputValue.store (lastLfoVal);
 }
 
 //==============================================================================

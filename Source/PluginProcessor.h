@@ -28,7 +28,7 @@ public:
     bool acceptsMidi()  const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.5; }
+    double getTailLengthSeconds() const override { return 2.0; }
 
     //==========================================================================
     int  getNumPrograms()    override { return 1; }
@@ -46,6 +46,11 @@ public:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     juce::AudioProcessorValueTreeState apvts;
 
+    // Tempo-sync note division labels (index matches delayDiv parameter)
+    static const juce::StringArray kDivisionLabels;
+    // Corresponding beat multipliers (fraction of a whole note)
+    static const float             kDivisionBeats[]; // in beats (quarter notes)
+
 private:
     //==========================================================================
     // DSP objects
@@ -55,23 +60,28 @@ private:
     AcidEnvelope filterEnv;
     AccentSlide  accentSlide;
 
-    // Cached parameter pointers (updated each block for thread-safety)
-    std::atomic<float>* pTuning    = nullptr;
-    std::atomic<float>* pCutoff    = nullptr;
-    std::atomic<float>* pResonance = nullptr;
-    std::atomic<float>* pEnvMod    = nullptr;
-    std::atomic<float>* pDecay     = nullptr;
-    std::atomic<float>* pAccent    = nullptr;
-    std::atomic<float>* pVolume    = nullptr;
-    std::atomic<float>* pWaveform  = nullptr;
+    // Stereo delay ring buffers
+    static constexpr size_t kMaxDelaySamples = 192002; // ~2 s at 96 kHz
+    std::vector<float>      delayBufferL;
+    std::vector<float>      delayBufferR;
+    int                     delayWritePos   = 0;
+    double                  currentSampleRate = 44100.0;
 
-    // Per-block sample processing
-    void processIncomingMidi (const juce::MidiBuffer& midi, int samplePos);
-    float renderSample();
+    // Cached parameter pointers
+    std::atomic<float>* pTuning        = nullptr;
+    std::atomic<float>* pCutoff        = nullptr;
+    std::atomic<float>* pResonance     = nullptr;
+    std::atomic<float>* pEnvMod        = nullptr;
+    std::atomic<float>* pDecay         = nullptr;
+    std::atomic<float>* pAccent        = nullptr;
+    std::atomic<float>* pVolume        = nullptr;
+    std::atomic<float>* pWaveform      = nullptr;
+    std::atomic<float>* pDelayDiv      = nullptr;  // note division index
+    std::atomic<float>* pDelayFeedback = nullptr;
+    std::atomic<float>* pDelayMix      = nullptr;
 
-    int   currentNote     = -1;
-    bool  noteIsOn        = false;
-    float masterGain      = 1.0f;
+    int   currentNote = -1;
+    bool  noteIsOn    = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Acid303AudioProcessor)
 };

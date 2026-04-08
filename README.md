@@ -1,4 +1,4 @@
-# Acid303 — Roland TB-303 Bass Line VST3 Emulator
+# vibe303 — Roland TB-303 Bass Line VST3 Emulator
 
 A faithful software emulation of the Roland TB-303 Bass Line synthesizer, built with C++17 and JUCE 8. Produces the classic acid squelch used in tech house, acid house, and techno.
 
